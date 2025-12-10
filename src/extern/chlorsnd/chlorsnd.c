@@ -10,8 +10,8 @@
 // Direct form 2, non-transposed
 struct chlorsnd_biquad_stage {
   int16_t pri_coefficients[5];
-  int16_t pri_delays_L[3];
-  int16_t pri_delays_R[3];
+  int32_t pri_delays_L[2];
+  int32_t pri_delays_R[2];
 };
 
 // Envelope Generator that lets you store amplitudes
@@ -23,9 +23,9 @@ struct chlorsnd_envg {
   uint8_t hold_point;
   // 0x0003
   uint8_t stride;
-  // 0x0008
-  uint8_t entries[40];
-  // 0x0030
+  // 0x0080
+  uint8_t entries[CHLORSND_ENVG_MEMORY];
+  // 0x0100
   // --------
   uint8_t pri_current_entry;
   uint8_t pri_current_stride;
@@ -34,7 +34,7 @@ struct chlorsnd_envg {
 
 struct chlorsnd_channel {
   // 0x0000
-  uint16_t control;
+  uint8_t control;
 
   // 0x0002
   int8_t volume_L;
@@ -69,18 +69,40 @@ struct chlorsnd_dsp {
   // 0x0002
   uint16_t envg_select_mask;
   // 0x0004
-  uint16_t wavetable_write_ptr;
+  uint16_t write_ptr;
   // 0x0006
-  uint16_t wavetable_write_data;
+  uint16_t write_data;
 
-  // 0x0010: envg port
+  // 0x0008: Channel 0 control register
+  // 0x0009: Channel 1 control register
+  // 0x000A: Channel 2 control register
+  // 0x000B: Channel 3 control register
+  // 0x000C: Channel 4 control register
+  // 0x000D: Channel 5 control register
+  // 0x000E: Channel 6 control register
+  // 0x000F: Channel 7 control register
+
+  // 0x0010: ENVG  0 control register
+  // 0x0011: ENVG  1 control register
+  // 0x0012: ENVG  2 control register
+  // 0x0013: ENVG  3 control register
+  // 0x0014: ENVG  4 control register
+  // 0x0015: ENVG  5 control register
+  // 0x0016: ENVG  6 control register
+  // 0x0017: ENVG  7 control register
+  // 0x0018: ENVG  8 control register
+  // 0x0019: ENVG  9 control register
+  // 0x001A: ENVG 10 control register
+  // 0x001B: ENVG 11 control register
+  // 0x001C: ENVG 12 control register
+  // 0x001D: ENVG 13 control register
+  // 0x001E: ENVG 14 control register
+  // 0x001F: ENVG 15 control register
+
   struct chlorsnd_envg envgs[16];
-  // 0x0040: channel port
   struct chlorsnd_channel channels[8];
-
-  // 0x0060
   // --------
-  uint8_t pri_sample_ram[CHLORSND_SAMPLE_MEMORY];
+  int8_t pri_sample_ram[CHLORSND_SAMPLE_MEMORY];
 };
 
 static struct chlorsnd_dsp chlorsnd;
@@ -88,39 +110,35 @@ static struct chlorsnd_dsp chlorsnd;
 void chlorsnd_init() { memset(chlorsnd, 0, sizeof chlorsnd); }
 
 void chlorsnd_poke_envg(uint16_t reg, uint8_t value) {
-  bool hi = (reg % 2) == 1;
   uint32_t which = 0;
-  uint32_t which_envg = 0;
-  for (uint32_t m = 1; m != (1 << 8); m <<= 1) {
-    for (uint32_t n = 1; n != (1 << 16); n <<= 1) {
-      if (((m & chlorsnd.channel_select_mask) != 0) &&
-          ((n & chlorsnd.envg_select_mask) != 0)) {
-        switch (reg) {
-        case 0x0000: {
-          chlorsnd.envgs[n].control = value;
-          break;
+  for (uint32_t m = 1; m != (1 << 16); m <<= 1) {
+    if ((m & chlorsnd.envg_select_mask) != 0) {
+      switch (reg) {
+      case 0x0000: {
+        chlorsnd.envgs[which].control = value;
+        break;
+      }
+      case 0x0001: {
+        chlorsnd.envgs[which].multiplier = *(int8_t *)&value;
+        break;
+      }
+      case 0x0002: {
+        chlorsnd.envgs[which].hold_point = value;
+        break;
+      }
+      case 0x0003: {
+        chlorsnd.envgs[which].stride = value;
+        break;
+      }
+      default: {
+        if (reg >= CHLORSND_ENVG_MEMORY_OFFSET && reg < (CHLORSND_ENVG_MEMORY + CHLORSND_ENVG_MEMORY_OFFSET)) {
+          chlorsnd.envgs[which].entries[reg - CHLORSND_ENVG_MEMORY_OFFSET] = value;
         }
-        case 0x0001: {
-          chlorsnd.envgs[n].multiplier = *(int8_t *)&value;
-          break;
-        }
-        case 0x0002: {
-          chlorsnd.envgs[n].hold_point = value;
-          break;
-        }
-        case 0x0003: {
-          chlorsnd.envgs[n].stride = value;
-          break;
-        }
-        default: {
-          if (reg > 0x0007 && reg < 0x0030) {
-            chlorsnd.envgs.entries[reg - 8] = value;
-          }
-          break;
-        }
-        }
+        break;
+      }
       }
     }
+    which++;
   }
 }
 
@@ -130,28 +148,35 @@ void chlorsnd_poke_channel(uint16_t reg, uint8_t value) {
   for (uint32_t m = 1; m != (1 << 8); m <<= 1) {
     if ((m & chlorsnd.channel_select_mask) != 0) {
       switch (reg) {
-      case 0x0000:
-      case 0x0001: {
-        chlorsnd.channels[i].control =
-            (hi ? (((uint16_t)value) << 8) : (((uint16_t)value) << 0));
+      case 0x0000: {
+        chlorsnd.channels[which].control = value;
+        if ((chlorsnd.channels[which].control & 0x02) != 0) {
+          chlorsnd.channels[which].accumulator_max = 0;
+        }
+        if ((chlorsnd.channels[which].control & 0x04) != 0) {
+          chlorsnd.channels[which].loop_start = 0;
+        }
+        if ((chlorsnd.channels[which].control & 0x08) != 0) {
+          chlorsnd.channels[which].loop_end = 0;
+        }
         break;
       }
       case 0x0002: {
-        chlorsnd.channels[i].volume_L = *(int8_t *)&value;
+        chlorsnd.channels[which].volume_L = *(int8_t *)&value;
         break;
       }
       case 0x0003: {
-        chlorsnd.channels[i].volume_R = *(int8_t *)&value;
+        chlorsnd.channels[which].volume_R = *(int8_t *)&value;
         break;
       }
       case 0x0004:
       case 0x0005: {
-        chlorsnd.channels[i].accumulator_max =
+        chlorsnd.channels[which].accumulator_max |=
             (hi ? (((uint16_t)value) << 8) : (((uint16_t)value) << 0));
         break;
       }
       case 0x0006: {
-        chlorsnd.channels[i].envg_used_amplitude = value;
+        chlorsnd.channels[which].envg_used_amplitude = value;
         break;
       }
       case 0x0007:
@@ -164,18 +189,18 @@ void chlorsnd_poke_channel(uint16_t reg, uint8_t value) {
       case 0x000E:
       case 0x000F:
       case 0x0010: {
-        chlorsnd.channels[i].envg_used_biquads_coeffs[reg - 7] = value;
+        chlorsnd.channels[which].envg_used_biquads_coeffs[reg - 7] = value % 16;
         break;
       }
       case 0x0018:
       case 0x0019: {
-        chlorsnd.channels[i].loop_start =
+        chlorsnd.channels[which].loop_start |=
             (hi ? (((uint16_t)value) << 8) : (((uint16_t)value) << 0));
         break;
       }
       case 0x001A:
       case 0x001B: {
-        chlorsnd.channels[i].loop_end =
+        chlorsnd.channels[which].loop_end |=
             (hi ? (((uint16_t)value) << 8) : (((uint16_t)value) << 0));
         break;
       }
@@ -193,6 +218,31 @@ void chlorsnd_poke(uint16_t reg, uint8_t value) {
   switch (reg) {
   case 0x0000: {
     chlorsnd.control = value;
+    if ((chlorsnd.control & 0x01) != 0) {
+      // ENVG mask should be reset
+      chlorsnd.envg_select_mask = 0;
+    }
+    if ((chlorsnd.control & 0x02) != 0) {
+      // MUX write pointer should be reset
+      chlorsnd.write_ptr = 0;
+    }
+    if ((chlorsnd.control & 0x04) != 0) {
+      // MUX write data should be reset
+      chlorsnd.write_data = 0;
+    }
+    if ((chlorsnd.control & 0x10) != 0) {
+      // Write Enable ENVG
+      chlorsnd_poke_envg(chlorsnd.write_ptr, value);
+    }
+    if ((chlorsnd.control & 0x20) != 0) {
+      // Write Enable Channel
+      chlorsnd_poke_channel(chlorsnd.write_ptr, value);
+    }
+    if ((chlorsnd.control & 0x80) != 0) {
+      // Write Enable Sample RAM
+      chlorsnd.pri_sample_ram[chlorsnd.write_ptr % CHLORSND_SAMPLE_MEMORY] =
+          *(int8_t *)&value;
+    }
     break;
   }
   case 0x0001: {
@@ -201,91 +251,123 @@ void chlorsnd_poke(uint16_t reg, uint8_t value) {
   }
   case 0x0002:
   case 0x0003: {
-    chlorsnd.envg_select_mask =
+    chlorsnd.envg_select_mask |=
         (hi ? (((uint16_t)value) << 8) : (((uint16_t)value) << 0));
     break;
   }
   case 0x0004:
   case 0x0005: {
-    chlorsnd.wavetable_write_ptr =
+    chlorsnd.write_ptr |=
         (hi ? (((uint16_t)value) << 8) : (((uint16_t)value) << 0));
     break;
   }
   case 0x0006:
   case 0x0007: {
-    chlorsnd.wavetable_write_data =
+    chlorsnd.write_data |=
         (hi ? (((uint16_t)value) << 8) : (((uint16_t)value) << 0));
     break;
   }
   default: {
-    if (reg > 0x000F && reg < 0x0040) {
-      chlorsnd_poke_envg(reg - 8, value);
-    }
-    if (reg > 0x003F && reg < 0x005F) {
-      chlorsnd_poke_channel(reg - 64, value);
-    }
     break;
+  }
+  }
+}
+
+uint8_t chlorsnd_peek(uint16_t reg) {
+  switch (reg) {
+  case 0x0000: {
+    return chlorsnd.control;
+  }
+  case 0x0008:
+  case 0x0009:
+  case 0x000A:
+  case 0x000B:
+  case 0x000C:
+  case 0x000D:
+  case 0x000E:
+  case 0x000F: {
+    return chlorsnd.channels[reg - 8].control;
+  }
+  case 0x0010:
+  case 0x0011:
+  case 0x0012:
+  case 0x0013:
+  case 0x0014:
+  case 0x0015:
+  case 0x0016:
+  case 0x0017:
+  case 0x0018:
+  case 0x0019:
+  case 0x001A:
+  case 0x001B:
+  case 0x001C:
+  case 0x001D:
+  case 0x001E:
+  case 0x001F: {
+    return chlorsnd.envgs[reg - 16].control;
+  }
+  default: {
+    return 0xff;
   }
   }
 }
 
 void chlorsnd_destroy() {}
 
+int16_t saturate_into_int16(int32_t what) {
+  if(what > 32767) {
+    return 32767;
+  }
+
+  if(what < -32767) {
+    return -32767;
+  }
+
+  return what;
+}
+
 int16_t chlorsnd_render_biquad(chlorsnd_biquad_stage *s, int16_t sample,
                                bool is_right) {
   // Assign delays
+  int32_t a = 0;
+  int32_t b = 0;
   if (is_right) {
-    s->pri_delays_R[2] = -s->pri_delays_R[1];
-    s->pri_delays_R[1] = -s->pri_delays_R[0];
-    s->pri_delays_R[0] = sample;
+    a -= s->pri_delays_R[1] * (s->pri_coefficients[1] << 8);
+    a >>= 16;
+    a -= s->pri_delays_R[0] * (s->pri_coefficients[0] << 8);
+    a >>= 16;
+    a += sample;
+    a >>= 16;
+
+    b += s->pri_delays_R[1] * (s->pri_coefficients[4] << 8);
+    b >>= 16;
+    b += s->pri_delays_R[0] * (s->pri_coefficients[3] << 8);
+    b >>= 16;
+    b += a * (s->pri_coefficients[2] << 8);
+    b >>= 16;
+
+    s->pri_delays_R[1] = s->pri_delays_R[0];
+    s->pri_delays_R[0] = a;
   } else {
-    s->pri_delays_L[2] = -s->pri_delays_L[1];
-    s->pri_delays_L[1] = -s->pri_delays_L[0];
-    s->pri_delays_L[0] = sample;
+    a -= s->pri_delays_L[1] * (s->pri_coefficients[1] << 8);
+    a >>= 16;
+    a -= s->pri_delays_L[0] * (s->pri_coefficients[0] << 8);
+    a >>= 16;
+    a += sample;
+    a >>= 16;
+
+    b += s->pri_delays_L[1] * (s->pri_coefficients[4] << 8);
+    b >>= 16;
+    b += s->pri_delays_L[0] * (s->pri_coefficients[3] << 8);
+    b >>= 16;
+    b += a * (s->pri_coefficients[2] << 8);
+    b >>= 16;
+
+    s->pri_delays_L[1] = s->pri_delays_L[0];
+    s->pri_delays_L[0] = a;
   }
-
-  // Calculate left-hand value
-  int32_t w = 0;
-  int32_t coefficient = 32768;
-  for (uint32_t i = 0; i < 3; i++) {
-    // Sum
-    if (is_right) {
-      w += (s->pri_delays_R[i] * coefficient) / 32768;
-    } else {
-      w += (s->pri_delays_L[i] * coefficient) / 32768;
-    }
-
-    // Then saturate
-    if (w > 32767) {
-      w = 32767;
-    } else if (w < -32767) {
-      w = -32767;
-    }
-
-    // Assign next coefficient
-    coefficient = s->pri_coefficients[i - 1];
-    coefficient *= 32768;
-  }
-
-  // Calculate right-hand value
-  int32_t y = 0;
-  for (uint32_t i = 0; i < 3; i++) {
-    // Assign coefficient
-    coefficient = s->pri_coefficients[i + 2];
-    coefficient *= 32768;
-
-    // Sum
-    y += (w * coefficient) / 32768;
-
-    // Then saturate
-    if (y > 32767) {
-      y = 32767;
-    } else if (y < -32767) {
-      y = -32767;
-    }
-  }
-
-  return y;
+  
+  return saturate_into_int16(b);
 }
 
 int16_t chlorsnd_render_envg(uint32_t e, bool use_exponent) {
@@ -296,7 +378,7 @@ int16_t chlorsnd_render_envg(uint32_t e, bool use_exponent) {
   }
 
   if (chlorsnd.envgs[e].pri_step_queued &&
-      (chlorsnd.envgs[e].pri_current_entry < 40)) {
+      (chlorsnd.envgs[e].pri_current_entry < CHLORSND_ENVG_MEMORY)) {
     bool key_on = (chlorsnd.envgs[e].control & 0x02) != 0;
     if (chlorsnd.envgs[e].pri_current_stride <
         chlorsnd.envgs[e].pri_current_stride) {
@@ -331,13 +413,13 @@ int16_t chlorsnd_render_channel(uint32_t c, bool is_right) {
         chlorsnd.channels[c].loop_start;
     chlorsnd.channels[c].pri_wavetable_read_ptr %= CHLORSND_SAMPLE_MEMORY;
   }
+  chlorsnd.channels[c].control = 0x00;
 
   int16_t sample =
       chlorsnd.pri_sample_ram[chlorsnd.channels[c].pri_wavetable_read_ptr];
   sample *= 256;
 
   if (chlorsnd.channels[c].pri_wavetable_read_ptr)
-
     // Step sample
     if (is_right) {
       sample *= chlorsnd.channels[c].volume_R;
@@ -386,9 +468,16 @@ int16_t chlorsnd_render_channel(uint32_t c, bool is_right) {
   if (key_reset) {
     chlorsnd.channels[c].control ^= 0x01;
   }
+
+  if ((chlorsnd.channels[c].control & 0x80) != 0) {
+    chlorsnd.channels[c].control ^= 0x80;
+  }
 }
 
 void chlorsnd_render(int16_t *stereo_buffer, uint32_t samples) {
+  // Some control registers get reset for peeking
+  chlorsnd.control = 0x00;
+
   for (uint32_t i = 0; i < samples; i++) {
     int16_t L = 0;
     int16_t R = 0;
@@ -427,9 +516,8 @@ void chlorsnd_render(int16_t *stereo_buffer, uint32_t samples) {
     }
 
     for (uint32_t c = 0; c < 8; c++) {
-
-      L += channel_L;
-      R += channel_R;
+      L += chlorsnd_render_channel(c, false) / 8;
+      R += chlorsnd_render_channel(c, true) / 8;
     }
 
     // LEFT CHANNEL
